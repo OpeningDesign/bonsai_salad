@@ -10,9 +10,18 @@ import ifcopenshell.geom
 from .units import project_unit_scale
 
 
+# ifcopenshell renamed this between 0.8 and 0.9, and the add-on is used from
+# both: Blender 5.2 links the 0.8 lane, Blender 5.1 the 0.9 one. Same meaning
+# either way -- an IfcObjectPlacement composed with its parents into a 4x4
+# matrix in project units (0.9 grew a should_return_si flag that defaults off).
+_placement_to_matrix = getattr(
+    ifcopenshell.util.placement, "get_placement", None
+) or ifcopenshell.util.placement.get_local_placement
+
+
 def _placement_matrix(drawing):
     """Return the 4x4 numpy placement matrix for the drawing annotation."""
-    return ifcopenshell.util.placement.get_local_placement(drawing.ObjectPlacement)
+    return _placement_to_matrix(drawing.ObjectPlacement)
 
 
 def camera_matrix_inv_col_major(drawing):
@@ -71,7 +80,7 @@ def get_camera_frustum_bbox(drawing, unit_scale=1.0):
         s.set('use-world-coords', False)
         shape = ifcopenshell.geom.create_shape(s, drawing)
         v_local = np.array(shape.geometry.verts).reshape(-1, 3) / unit_scale
-        m = ifcopenshell.util.placement.get_local_placement(drawing.ObjectPlacement)
+        m = _placement_to_matrix(drawing.ObjectPlacement)
         ones = np.ones((len(v_local), 1))
         v_world = (m @ np.hstack([v_local, ones]).T).T[:, :3]
         return (v_world[:, 0].min(), v_world[:, 0].max(),
@@ -112,7 +121,7 @@ def _element_origin(element):
         placement = getattr(element, "ObjectPlacement", None)
         if placement is None:
             return None
-        m = ifcopenshell.util.placement.get_local_placement(placement)
+        m = _placement_to_matrix(placement)
         return float(m[0, 3]), float(m[1, 3]), float(m[2, 3])
     except Exception:
         return None
@@ -210,7 +219,7 @@ def world_matrix_col_major(element):
         placement = getattr(element, "ObjectPlacement", None)
         if placement is None:
             return list(np.eye(4).flatten(order="F"))
-        m = ifcopenshell.util.placement.get_local_placement(placement)
+        m = _placement_to_matrix(placement)
         return list(m.flatten(order="F"))
     except Exception:
         return list(np.eye(4).flatten(order="F"))
