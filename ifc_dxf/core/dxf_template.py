@@ -71,14 +71,28 @@ def _project_local_to_lines(verts, edges, cam_R):
 
 
 def _compute_insert(wm_flat, cam_inv_np):
-    """Return (pos_2d, rotation_deg) for a DXF INSERT from a world matrix."""
+    """Return (pos_2d, rotation_deg, mirrored) for a DXF INSERT.
+
+    A placement can be flipped as well as turned: a Revit curtain wall mullion
+    arrives with local Z pointing down, which in plan is a reflection. Its
+    local-XY-to-world-XY block then has a negative determinant, and no rotation
+    alone can reproduce it -- read as a pure rotation, the symbol comes out
+    mirrored, which looks like an arbitrary extra turn. 159 of the 169 curtain
+    walls in one real plan are placed this way.
+
+    When mirrored is True the caller must reflect in Y as well, which a DXF
+    INSERT expresses as yscale -1. The rotation is unaffected: for a reflected
+    frame M == [[cos, sin], [sin, -cos]], so atan2(M[1][0], M[0][0]) is still
+    the angle, and rotation plus yscale -1 reproduces M exactly.
+    """
     wm = np.array(wm_flat, dtype=float).reshape(4, 4, order='F')
     orig_h = np.array([0.0, 0.0, 0.0, 1.0])
     pos_h  = cam_inv_np @ (wm @ orig_h)
     local_x_world = wm[:3, :3] @ np.array([1.0, 0.0, 0.0])
     rot_deg = float(np.degrees(np.arctan2(float(local_x_world[1]),
                                           float(local_x_world[0]))))
-    return (float(pos_h[0]), float(pos_h[1])), rot_deg
+    mirrored = bool(np.linalg.det(wm[:2, :2]) < 0.0)
+    return (float(pos_h[0]), float(pos_h[1])), rot_deg, mirrored
 
 
 def _snap_lw(mm):
