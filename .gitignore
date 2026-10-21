@@ -12,3 +12,4 @@ pianta_test*.png
 *.bak
 .pytest_cache/
 docs/superpowers/
+*.code-workspace
