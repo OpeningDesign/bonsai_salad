@@ -1068,3 +1068,47 @@ class TestDrawingFilters:
         ifc, drawing, pset = self._drawing()
         ifc_query.get_elements(ifc, drawing, dict(pset, Exclude='GlobalId="x"'))
         assert "predates 0.8.1" in capsys.readouterr().out
+
+
+class TestSlabOcclusionFailsOpen:
+    """_is_occluded_by_slab must not hide an element whose height it cannot read.
+
+    The rule used to compare the element's *placement origin* against the slab
+    top. Furniture, curtain walls and plates are placed at the structural
+    datum, below the top of the floor slab they stand on, so the slab holding
+    them up counted as covering them. Only IfcExtrudedAreaSolid yields a height
+    (_wall_z_range returns None otherwise), so this applied to most of a plan:
+    on a real project (Restaurant_E_Washington, FLOOR PLAN - 1ST FLOOR) it sent
+    376 of 640 elements to Bucket C -- 141 furniture, 84 curtain wall, 10 doors
+    -- with nothing said about it. Only 2 of those were skipped for the
+    documented reason, a missing 2D representation.
+    """
+
+    SLAB_TOP = 1.0
+    SLABS = None
+
+    def setup_method(self):
+        import shapely
+        from ifc_dxf.core import geometry as geom
+        self.geom = geom
+        square = shapely.Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+        self.SLABS = [(self.SLAB_TOP, square)]
+
+    def test_unknown_height_is_drawn(self):
+        """The regression: no height means draw it, not hide it."""
+        assert not self.geom._is_occluded_by_slab(5, 5, None, self.SLABS)
+
+    def test_element_below_the_slab_is_hidden(self):
+        """A real height that is under the slab still occludes."""
+        assert self.geom._is_occluded_by_slab(5, 5, self.SLAB_TOP - 0.5, self.SLABS)
+
+    def test_element_rising_above_the_slab_is_drawn(self):
+        """Standing on the floor, not buried under it."""
+        assert not self.geom._is_occluded_by_slab(5, 5, self.SLAB_TOP + 0.5, self.SLABS)
+
+    def test_outside_the_footprint_is_drawn(self):
+        """Courtyards and atria are never excluded."""
+        assert not self.geom._is_occluded_by_slab(50, 50, self.SLAB_TOP - 0.5, self.SLABS)
+
+    def test_no_slabs_means_no_occlusion(self):
+        assert not self.geom._is_occluded_by_slab(5, 5, self.SLAB_TOP - 0.5, [])
