@@ -12,7 +12,12 @@ except ModuleNotFoundError as exc:
     # Outside Blender (`python -m ifc_dxf`, see __main__.py) there is no UI to
     # register: only ifc_dxf.core is usable. Any other missing module is a
     # real error and must surface.
-    if exc.name not in ("bpy", "bonsai"):
+    #
+    # The submodule is checked, not just the top name: Blender's own
+    # interpreter carries a `bpy` that imports but is not a package, so running
+    # the CLI through it -- the way to reach the 0.9 lane's ifcopenshell --
+    # gets as far as bonsai before failing on `bpy.utils`.
+    if (exc.name or "").split(".")[0] not in ("bpy", "bonsai"):
         raise
     bpy = None
 
