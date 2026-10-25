@@ -20,7 +20,8 @@ from collections import defaultdict
 
 import numpy as np
 
-from .ifc_query import find_plan_repr, is_mapped_repr, get_type_block_name, get_material_name
+from .ifc_query import (find_plan_repr, is_mapped_repr, get_type_block_name,
+                        get_material_name, mapping_source_key)
 from .curves import _extract_local_curves
 from .dxf_template import _project_local_to_lines, _compute_insert
 from .camera import world_matrix_col_major
@@ -59,8 +60,31 @@ def place_plan_symbol(element, layer, target_view, crease_angle_deg,
         if shared_name is not None:
             block_name = shared_name
             block_gid  = ifc_type.GlobalId
+            if not from_type:
+                # The geometry is mapped per instance rather than inherited
+                # from the type, and one type can front many geometries, so
+                # the block follows the mapping source -- see
+                # mapping_source_key. Keyed on the type alone, 120 curtain
+                # wall segments shared one block and 119 drew the wrong shape.
+                source_key = mapping_source_key(plan_repr)
+                if source_key is not None:
+                    block_name = f"{shared_name}_M{source_key}"
 
-    if block_name is not None:
+    # The block + INSERT shortcut projects the element's *local* geometry with
+    # the camera rotation and supplies the element's own rotation as a 2D
+    # angle. That holds only while the element's local Z lands on the camera's
+    # Z. A curtain wall transom is placed with its profile plane vertical and
+    # extruded horizontally, so its local Z lies in the plan: the shortcut then
+    # keeps the 2in x 5in profile and throws the 3ft length away, and reads the
+    # rotation off a vertical axis, where atan2(0, 0) is 0 whatever the element
+    # is really doing. 68 of this plan's curtain walls are placed that way.
+    # Those project through the element's rotation as well, which bakes the
+    # orientation into the geometry and makes it per-instance.
+    _wm_R = np.array(wm, dtype=float).reshape(4, 4, order="F")[:3, :3]
+    _z_cam = np.asarray(cam_R) @ _wm_R[:, 2]
+    plan_parallel = abs(abs(float(_z_cam[2])) - 1.0) < 1e-6
+
+    if block_name is not None and plan_parallel:
         # Shared type BLOCK: extract geometry once, then INSERT per instance.
         if block_name not in seen_blocks:
             geom = _extract_block_geom(element, plan_repr, crease_angle_deg,
@@ -72,19 +96,38 @@ def place_plan_symbol(element, layer, target_view, crease_angle_deg,
             block_defs[block_name] = geom
             block_order.append(block_name)
             seen_blocks[block_name] = True
-        pos, rot = _compute_insert(wm, cam_inv_np)
+        pos, rot, mirrored = _compute_insert(wm, cam_inv_np)
         # The tuple carries the *instance* GlobalId (-> INSERT XDATA); the
         # block definition's description holds the shared type's GlobalId.
-        block_inserts.setdefault(block_name, []).append((pos, rot, layer, gid, role))
+        block_inserts.setdefault(block_name, []).append(
+            (pos, rot, layer, gid, role, mirrored))
         return True
 
     # Direct draw on the IfcClass layer: bake the INSERT transform into the
     # geometry so output matches what a block+insert would have produced.
-    geom = _extract_block_geom(element, plan_repr, crease_angle_deg,
-                               cam_R, cam_rot_deg, unit_scale)
-    if geom is None:
-        return False
-    pos, rot = _compute_insert(wm, cam_inv_np)
+    if plan_parallel:
+        geom = _extract_block_geom(element, plan_repr, crease_angle_deg,
+                                   cam_R, cam_rot_deg, unit_scale)
+        if geom is None:
+            return False
+        pos, rot, mirrored = _compute_insert(wm, cam_inv_np)
+        if mirrored:
+            geom = _mirror_geom(geom)
+    else:
+        # Project through the element's rotation as well as the camera's, so
+        # the plan shows what the viewer sees rather than the element's local
+        # XY plane. The orientation is then already in the geometry, leaving
+        # the placement a pure translation.
+        # (Every element taking this branch in practice yields line segments
+        # only; an arc in a tilted plane projects to an ellipse, which this
+        # does not construct.)
+        geom = _extract_block_geom(element, plan_repr, crease_angle_deg,
+                                   np.asarray(cam_R) @ _wm_R, cam_rot_deg,
+                                   unit_scale)
+        if geom is None:
+            return False
+        pos, _rot, _mirrored = _compute_insert(wm, cam_inv_np)
+        rot = 0.0
     _append_direct(direct_entities, layer, pos, rot, geom,
                    gid=gid, ifc_class=ifc_class, role=role)
     return True
@@ -126,6 +169,24 @@ def _extract_block_geom(element, plan_repr, crease_angle_deg, cam_R, cam_rot_deg
                               float(maj[0]), float(maj[1]), ratio, t1, t2))
     return {"lines": lines, "arcs": arcs_blk,
             "circles": circles_blk, "ellipses": ellipses_blk}
+
+
+def _mirror_geom(geom):
+    """Reflect block-local geometry in Y, what a DXF INSERT with yscale -1 does.
+
+    Used by the direct path so a flipped placement draws the same whether it
+    went through a shared block or was baked straight onto its layer. The
+    reflection reverses orientation, so an arc's start and end angles swap as
+    well as negate.
+    """
+    return {
+        "lines": [((x0, -y0), (x1, -y1)) for (x0, y0), (x1, y1) in geom["lines"]],
+        "arcs": [(cx, -cy, r, (-a_e) % 360, (-a_s) % 360)
+                 for cx, cy, r, a_s, a_e in geom["arcs"]],
+        "circles": [(cx, -cy, r) for cx, cy, r in geom["circles"]],
+        "ellipses": [(cx, -cy, maj_x, -maj_y, ratio, -t2, -t1)
+                     for cx, cy, maj_x, maj_y, ratio, t1, t2 in geom["ellipses"]],
+    }
 
 
 def _append_direct(direct_entities, layer, pos, rot_deg, geom,

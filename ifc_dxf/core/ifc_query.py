@@ -164,6 +164,26 @@ def get_type_block_name(element):
     )
 
 
+def mapping_source_key(plan_repr):
+    """Return a stable key for the geometry a mapped representation points at.
+
+    Returns None when the representation holds no IfcMappedItem.
+
+    Instances of one type can each carry their own IfcMappedItem pointing at a
+    different IfcRepresentationMap: a Revit curtain wall exports its mullions
+    this way, 36 distinct geometries under a single IfcCurtainWallType. A
+    shared block keyed on the type alone then serves all of them, and every
+    instance after the first is drawn with the first one's geometry at its own
+    placement -- the same shape repeated at assorted rotations. The mapping
+    source identifies the geometry itself, so blocks keyed on it stay distinct.
+    """
+    ids = sorted({item.MappingSource.id()
+                  for item in plan_repr.Items if item.is_a("IfcMappedItem")})
+    if not ids:
+        return None
+    return "-".join(str(i) for i in ids)
+
+
 def get_assigned_product(element):
     """Return the IfcRelAssignsToProduct.RelatingProduct linked to element, or None.
 

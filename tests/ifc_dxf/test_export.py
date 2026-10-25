@@ -1068,3 +1068,173 @@ class TestDrawingFilters:
         ifc, drawing, pset = self._drawing()
         ifc_query.get_elements(ifc, drawing, dict(pset, Exclude='GlobalId="x"'))
         assert "predates 0.8.1" in capsys.readouterr().out
+
+
+class TestSlabOcclusionFailsOpen:
+    """_is_occluded_by_slab must not hide an element whose height it cannot read.
+
+    The rule used to compare the element's *placement origin* against the slab
+    top. Furniture, curtain walls and plates are placed at the structural
+    datum, below the top of the floor slab they stand on, so the slab holding
+    them up counted as covering them. Only IfcExtrudedAreaSolid yields a height
+    (_wall_z_range returns None otherwise), so this applied to most of a plan:
+    on a real project (Restaurant_E_Washington, FLOOR PLAN - 1ST FLOOR) it sent
+    376 of 640 elements to Bucket C -- 141 furniture, 84 curtain wall, 10 doors
+    -- with nothing said about it. Only 2 of those were skipped for the
+    documented reason, a missing 2D representation.
+    """
+
+    SLAB_TOP = 1.0
+    SLABS = None
+
+    def setup_method(self):
+        import shapely
+        from ifc_dxf.core import geometry as geom
+        self.geom = geom
+        square = shapely.Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])
+        self.SLABS = [(self.SLAB_TOP, square)]
+
+    def test_unknown_height_is_drawn(self):
+        """The regression: no height means draw it, not hide it."""
+        assert not self.geom._is_occluded_by_slab(5, 5, None, self.SLABS)
+
+    def test_element_below_the_slab_is_hidden(self):
+        """A real height that is under the slab still occludes."""
+        assert self.geom._is_occluded_by_slab(5, 5, self.SLAB_TOP - 0.5, self.SLABS)
+
+    def test_element_rising_above_the_slab_is_drawn(self):
+        """Standing on the floor, not buried under it."""
+        assert not self.geom._is_occluded_by_slab(5, 5, self.SLAB_TOP + 0.5, self.SLABS)
+
+    def test_outside_the_footprint_is_drawn(self):
+        """Courtyards and atria are never excluded."""
+        assert not self.geom._is_occluded_by_slab(50, 50, self.SLAB_TOP - 0.5, self.SLABS)
+
+    def test_no_slabs_means_no_occlusion(self):
+        assert not self.geom._is_occluded_by_slab(5, 5, self.SLAB_TOP - 0.5, [])
+
+
+class TestMappedBlocksFollowTheirGeometry:
+    """Two instances of one type with different mapped geometry need two blocks.
+
+    place_plan_symbol shares a BLOCK whenever the representation is inherited
+    from the type *or* is a mapped item. The block was keyed on the type alone,
+    which is right only in the first case: an instance can carry its own
+    IfcMappedItem pointing at its own IfcRepresentationMap, and one type can
+    front many of them. A Revit curtain wall does exactly that -- on
+    Restaurant_E_Washington (FLOOR PLAN - 1ST FLOOR) 167 curtain walls drawing
+    68 distinct geometries collapsed into 5 blocks, one of them serving 120
+    instances built from 36 different sources, so 119 of them drew the wrong
+    shape at their own placement. IfcPlate collapsed 51 geometries into 3.
+    """
+
+    def test_distinct_sources_give_distinct_keys(self):
+        from ifc_dxf.core.ifc_query import mapping_source_key
+
+        class _Item:
+            def __init__(self, src_id):
+                self._src = type("S", (), {"id": lambda s, i=src_id: i})()
+            def is_a(self, cls):
+                return cls == "IfcMappedItem"
+            @property
+            def MappingSource(self):
+                return self._src
+
+        class _Repr:
+            def __init__(self, ids):
+                self.Items = [_Item(i) for i in ids]
+
+        assert mapping_source_key(_Repr([11])) != mapping_source_key(_Repr([22]))
+
+    def test_same_source_gives_the_same_key(self):
+        """Instances that really do share geometry must still share a block."""
+        from ifc_dxf.core.ifc_query import mapping_source_key
+
+        class _Item:
+            def __init__(self, src_id):
+                self._src = type("S", (), {"id": lambda s, i=src_id: i})()
+            def is_a(self, cls):
+                return cls == "IfcMappedItem"
+            @property
+            def MappingSource(self):
+                return self._src
+
+        class _Repr:
+            def __init__(self, ids):
+                self.Items = [_Item(i) for i in ids]
+
+        assert mapping_source_key(_Repr([7])) == mapping_source_key(_Repr([7]))
+        # order must not matter
+        assert mapping_source_key(_Repr([7, 9])) == mapping_source_key(_Repr([9, 7]))
+
+    def test_unmapped_representation_has_no_key(self):
+        """Geometry inherited from the type keeps keying on the type."""
+        from ifc_dxf.core.ifc_query import mapping_source_key
+
+        class _Solid:
+            def is_a(self, cls):
+                return cls == "IfcExtrudedAreaSolid"
+
+        class _Repr:
+            Items = [_Solid()]
+
+        assert mapping_source_key(_Repr()) is None
+
+
+class TestFlippedPlacementsMirror:
+    """A placement can be reflected, and a rotation alone cannot say so.
+
+    _compute_insert read only the element's local X axis, so a frame with local
+    Z pointing down -- a reflection in plan -- was written as a plain rotation
+    and the symbol came out mirrored, looking like an arbitrary extra turn. A
+    Revit curtain wall places its mullions this way: on Restaurant_E_Washington
+    (FLOOR PLAN - 1ST FLOOR) 91 of 167 curtain wall inserts need the reflection,
+    including 1ki9Mtsev30R$mP0bQaNma and 1ki9Mtsev30R$mP0bQaNsv.
+    """
+
+    @staticmethod
+    def _wm(cols):
+        """Flat column-major 4x4 from three 3-vectors, origin at zero."""
+        import numpy as np
+        m = np.eye(4)
+        for i, c in enumerate(cols):
+            m[:3, i] = c
+        return list(m.flatten(order="F"))
+
+    def _insert(self, cols):
+        import numpy as np
+        from ifc_dxf.core.dxf_template import _compute_insert
+        return _compute_insert(self._wm(cols), np.eye(4))
+
+    def test_upright_placement_is_not_mirrored(self):
+        _pos, _rot, mirrored = self._insert([(1, 0, 0), (0, 1, 0), (0, 0, 1)])
+        assert mirrored is False
+
+    def test_rotated_upright_placement_is_not_mirrored(self):
+        import math
+        a = math.radians(30.0)
+        cols = [(math.cos(a), math.sin(a), 0), (-math.sin(a), math.cos(a), 0), (0, 0, 1)]
+        _pos, rot, mirrored = self._insert(cols)
+        assert mirrored is False
+        assert rot == pytest.approx(30.0)
+
+    def test_flipped_placement_is_mirrored(self):
+        """The real curtain wall frame: local Z points down."""
+        cols = [(0.2561, 0.9667, 0), (0.9667, -0.2561, 0), (0, 0, -1)]
+        _pos, rot, mirrored = self._insert(cols)
+        assert mirrored is True
+        assert rot == pytest.approx(75.162, abs=0.01)
+
+    def test_rotation_plus_mirror_reproduces_the_frame(self):
+        """rotation + yscale -1 must rebuild the original 2x2 exactly."""
+        import math
+        import numpy as np
+        cols = [(0.2561, 0.9667, 0), (0.9667, -0.2561, 0), (0, 0, -1)]
+        _pos, rot, mirrored = self._insert(cols)
+        assert mirrored
+        t = math.radians(rot)
+        rebuilt = np.array([[math.cos(t), math.sin(t)],
+                            [math.sin(t), -math.cos(t)]])
+        original = np.array([[cols[0][0], cols[1][0]],
+                             [cols[0][1], cols[1][1]]])
+        assert np.abs(rebuilt - original).max() < 1e-4

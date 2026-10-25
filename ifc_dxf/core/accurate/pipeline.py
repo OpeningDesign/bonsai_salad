@@ -369,29 +369,63 @@ def _setup_serialiser(ifc, drawing, scale_factor_val, target_view,
     except Exception:
         edge_classification = False  # ifcopenshell build without #3668
     buf = ifcopenshell.geom.serializers.buffer()
-    ss  = ifcopenshell.geom.serializer_settings()
-    serialiser = ifcopenshell.geom.serializers.svg(buf, gs, ss)
-    serialiser.setWithoutStoreys(True)
-    serialiser.setPolygonal(True)
-    serialiser.setUseHlrPoly(True)
-    # Objects with more edges are rendered as wireframe instead of HLR (perf)
-    serialiser.setProfileThreshold(10000)
-    serialiser.setUseNamespace(True)
-    serialiser.setAlwaysProject(True)
-    serialiser.setAutoElevation(False)
-    serialiser.setAutoSection(False)
-    serialiser.setPrintSpaceNames(False)
-    serialiser.setPrintSpaceAreas(False)
-    serialiser.setDrawDoorArcs(False)
-    serialiser.setNoCSS(True)
-    serialiser.setElevationRefGuid(drawing.GlobalId)
-    serialiser.setScale(scale_factor_val)
-    serialiser.setSubtractionSettings(ifcopenshell.ifcopenshell_wrapper.ALWAYS)
-    serialiser.setUsePrefiltering(True)  # See IfcOpenShell #3359
-    serialiser.setUnifyInputs(True)
-    serialiser.setSegmentProjection(True)
-    if target_view == "REFLECTED_PLAN_VIEW":
-        serialiser.setMirrorY(True)
+
+    # 0.8 configures the serializer through setter methods and a separate
+    # serializer_settings object; 0.9 dropped both and moved every option onto
+    # geom.settings() as a string key. Mirrors whichever setup_serialiser the
+    # installed Bonsai uses, so DXF and SVG keep running the same engine
+    # configuration on either lane.
+    if hasattr(ifcopenshell.geom, "serializer_settings"):
+        ss = ifcopenshell.geom.serializer_settings()
+        serialiser = ifcopenshell.geom.serializers.svg(buf, gs, ss)
+        serialiser.setWithoutStoreys(True)
+        serialiser.setPolygonal(True)
+        serialiser.setUseHlrPoly(True)
+        # Objects with more edges are rendered as wireframe instead of HLR (perf)
+        serialiser.setProfileThreshold(10000)
+        serialiser.setUseNamespace(True)
+        serialiser.setAlwaysProject(True)
+        serialiser.setAutoElevation(False)
+        serialiser.setAutoSection(False)
+        serialiser.setPrintSpaceNames(False)
+        serialiser.setPrintSpaceAreas(False)
+        serialiser.setDrawDoorArcs(False)
+        serialiser.setNoCSS(True)
+        serialiser.setElevationRefGuid(drawing.GlobalId)
+        serialiser.setScale(scale_factor_val)
+        serialiser.setSubtractionSettings(ifcopenshell.ifcopenshell_wrapper.ALWAYS)
+        serialiser.setUsePrefiltering(True)  # See IfcOpenShell #3359
+        serialiser.setUnifyInputs(True)
+        serialiser.setSegmentProjection(True)
+        if target_view == "REFLECTED_PLAN_VIEW":
+            serialiser.setMirrorY(True)
+    else:
+        for key, value in (
+            ("svg-without-storeys", True),
+            ("svg-write-poly", True),
+            ("svg-poly", True),
+            # Objects with more edges are rendered as wireframe instead of HLR
+            ("profile-threshold", 10000),
+            ("svg-xmlns", True),
+            ("svg-project", True),
+            ("auto-elevation", False),
+            ("auto-section", False),
+            ("print-space-names", False),
+            ("print-space-areas", False),
+            ("door-arcs", False),
+            ("svg-no-css", True),
+            ("elevation-ref-guid", drawing.GlobalId),
+            ("scale", str(scale_factor_val)),
+            ("svg-subtract-before", "always"),
+            ("svg-prefilter", True),  # See IfcOpenShell #3359
+            ("svg-unify-inputs", True),
+            ("svg-segment-projection", True),
+        ):
+            gs.set(key, value)
+        if target_view == "REFLECTED_PLAN_VIEW":
+            gs.set("svg-mirror-y", True)
+        serialiser = ifcopenshell.geom.serializers.svg(buf, gs)
+
     serialiser.setFile(ifc)
     return gs, buf, serialiser, edge_classification
 

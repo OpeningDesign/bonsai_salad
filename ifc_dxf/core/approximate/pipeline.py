@@ -110,10 +110,13 @@ def classify_elements(elements, cut_z, col_major, cam_dir, target_view,
             continue
         wm = world_matrix_col_major(elem)
 
-        # Rule: slab occlusion
+        # Rule: slab occlusion. The element's own height decides it, not its
+        # placement origin -- see _is_occluded_by_slab. z_max is None for
+        # anything that is not an extrusion, and those are drawn.
         if floor_slabs:
-            x_w, y_w, z_w = float(wm[12]), float(wm[13]), float(wm[14])
-            if _is_occluded_by_slab(x_w, y_w, z_w, floor_slabs):
+            x_w, y_w = float(wm[12]), float(wm[13])
+            _z_min_e, z_max_e = _wall_z_range(elem, wm)
+            if _is_occluded_by_slab(x_w, y_w, z_max_e, floor_slabs):
                 records.append(ElementRecord(elem, "C", cls, "view", None, False))
                 continue
 

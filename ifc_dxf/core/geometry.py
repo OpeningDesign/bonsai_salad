@@ -618,15 +618,27 @@ def _compute_floor_slabs(ifc, cut_z):
     return slabs
 
 
-def _is_occluded_by_slab(x_world, y_world, z_origin, floor_slabs):
-    """Return True if (x_world, y_world) at z_origin lies under any floor slab.
+def _is_occluded_by_slab(x_world, y_world, z_top_element, floor_slabs):
+    """Return True if the element is wholly hidden under a floor slab.
 
-    Uses XY footprint containment: element must be spatially below the slab
-    (z_origin < z_top) AND its XY origin must fall within the slab polygon.
-    Elements outside the slab footprint (courtyards, atria) are never excluded.
+    *z_top_element* is the element's highest point in world space, or None when
+    its geometry does not give one. An element counts as hidden only when its
+    whole height is below a slab top (z_top_element < z_top) and its XY origin
+    falls within that slab's polygon. Elements outside every slab footprint
+    (courtyards, atria) are never excluded.
+
+    An unknown height draws the element. This test used to read the placement
+    origin instead, which hid most of a plan: furniture, curtain walls and
+    plates are placed at the structural datum, below the top of the floor slab
+    they stand on, so the slab holding them up counted as covering them. Only
+    IfcExtrudedAreaSolid yields a height here, so that guess was being applied
+    to the majority of elements, and dropping a visible element is a worse
+    failure than drawing a hidden one -- it is silent.
     """
+    if z_top_element is None:
+        return False
     pt = shapely.Point(x_world, y_world)
     for z_top, poly in floor_slabs:
-        if z_origin < z_top - 1e-3 and poly.covers(pt):
+        if z_top_element < z_top - 1e-3 and poly.covers(pt):
             return True
     return False

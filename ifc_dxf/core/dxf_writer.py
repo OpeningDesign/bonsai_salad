@@ -76,7 +76,7 @@ def _write_dxf(output_path, block_defs, block_order, block_inserts,
 
     block_defs:    name -> {ifc_class, material, lines, arcs, circles, ellipses}
     block_order:   list of block names in insertion order
-    block_inserts: name -> [(pos_2d, rot_deg, layer, gid, role), ...]
+    block_inserts: name -> [(pos_2d, rot_deg, layer, gid, role, mirrored), ...]
     direct_entities: [{layer, role, gid, ifc_class, polylines, arcs, circles,
                    ellipses}, ...] -- world-space geometry for elements that
                    don't match a reusable type symbol, drawn straight onto
@@ -185,11 +185,15 @@ def _write_dxf(output_path, block_defs, block_order, block_inserts,
         # by its layer instead -- see layers.insert_layer. The INSERT carries
         # the *instance* GlobalId as XDATA (the block description above holds
         # the shared type's GlobalId).
-        for pos, rot, layer, gid, role in block_inserts.get(block_name, []):
+        for pos, rot, layer, gid, role, mirrored in block_inserts.get(block_name, []):
             layer = insert_layer(layer, role)
             ensure_layer(doc, layer, "overhead" if role == "overhead" else "class")
-            ins = msp.add_blockref(block_name, pos,
-                                   dxfattribs={"rotation": rot, "layer": layer})
+            attribs = {"rotation": rot, "layer": layer}
+            if mirrored:
+                # A flipped placement is a reflection, not a turn -- see
+                # _compute_insert. yscale -1 is how a DXF INSERT says so.
+                attribs["yscale"] = -1.0
+            ins = msp.add_blockref(block_name, pos, dxfattribs=attribs)
             set_ifc_xdata(ins, bd.get("ifc_class"), gid)
 
     # Direct geometry (elements not matching a reusable type symbol): entities
@@ -440,7 +444,7 @@ def _write_dxf(output_path, block_defs, block_order, block_inserts,
                 xs.extend(x for x, y in poly.exterior.coords)
                 ys.extend(y for x, y in poly.exterior.coords)
     for inserts in block_inserts.values():
-        for pos, _rot, _layer, _gid, _role in inserts:
+        for pos, _rot, _layer, _gid, _role, _mirrored in inserts:
             xs.append(float(pos[0])); ys.append(float(pos[1]))
     for _gid, _cls, _layer, exterior, _holes in (footprint_polys or []):
         xs.extend(p[0] for p in exterior)
