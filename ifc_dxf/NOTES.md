@@ -9,6 +9,52 @@ next person pays for it again.
 
 ------
 
+## Projection
+
+### A reflected ceiling plan needs the mirror in the camera, not only the serializer
+
+**Symptom:** in an RCP, the linework is right and the text is somewhere else.
+Every tag is at the exactly-right coordinate for a plan view that is not being
+drawn. One real RCP put all 48 of its light tags on the wrong side of the plan.
+
+A `REFLECTED_PLAN_VIEW` is the plan reflected in Y, and a drawing is assembled
+from two halves that have to agree on that:
+
+* linework comes from the SVG serializer, told to mirror by
+  `svg-mirror-y` / `setMirrorY(True)`;
+* annotations, plan symbols and hatches are projected here, through
+  `camera_matrix_inv_col_major`.
+
+Set the mirror on the serializer alone and the halves are in different frames.
+
+**Rule:** the reflection belongs in the camera inverse, which is where Bonsai
+puts it too — `tool.Drawing.get_camera_shape_matrix` negates the camera's Y for
+a `REFLECTED_PLAN_VIEW`, so everything projected through that camera inherits
+it. See `camera._MIRRORED_TARGET_VIEWS`.
+
+Two things do *not* want the reflection and have to take it back out:
+
+* `camera_plan_rotation`, because `plan_symbols` turns block-local arc start/end
+  angles by `cam_rot_deg`, and a reflection has no such angle. The reflection
+  travels on the INSERT instead: `_compute_insert` negates the rotation and
+  flips the handedness (`Mirror . Rot(a) == Rot(-a) . Mirror`), which DXF
+  expresses as `yscale -1`.
+* `camera_pos_dir_ref`, which feeds the serializer — it applies its own mirror,
+  so handing it a mirrored frame would mirror twice.
+
+Worth knowing when checking the arithmetic: the camera body is centred on its
+own origin (`y_max + y_min == 0`), so the serializer mirrors about that origin
+and the paper→camera mapping in `accurate/pipeline._parse_hlr_svg` needs no
+constant adjustment.
+
+**How it was caught:** every DXF entity carries its GlobalId in XDATA
+(`core/xdata.py`), so the drawn position of each element can be compared against
+its own `ObjectPlacement` projected through the camera. For 360 elements the
+as-is distance had a median of 23.8 drawing units; negating the IFC's Y brought
+it to 0.15. That is not something to judge by eye.
+
+---
+
 ## Annotations
 
 ### Resolve a text literal's formulas before its variables, and pass the product
@@ -45,3 +91,33 @@ code 10. Set `insert` alone and the text lands at the origin. IFC
 `BoxAlignment` maps to those two codes via
 `annotations._BOX_ALIGN_TO_TEXT`; note the values are `"top-middle"` and
 `"bottom-middle"` but a bare `"center"` for the middle row.
+
+---
+
+## Testing
+
+### A test that cannot fail is worse than no test
+
+Both of the bugs above were first "verified" by assertions that passed either
+way:
+
+* an annotation count that read 0 empty strings because the helper did not
+  follow `IfcMappedItem` to the literal, so it was counting nothing;
+* a reflected-plan test written against the approximate pipeline, which
+  projects *both* halves of the drawing through the camera and so stayed
+  self-consistent while wrong. The bug only exists where the two halves come
+  from different places, i.e. the accurate pipeline.
+
+**Rule:** break the fix and watch the new test fail before committing it. For
+the mirror, disabling `_MIRRORED_TARGET_VIEWS` has to leave the linework
+reflected and the text behind — the user's exact symptom — or the test is not
+testing it.
+
+### `sys.executable` is not a usable interpreter inside Blender
+
+`tests/ifc_dxf/test_cli.py::test_list_runs_headless` spawns
+`sys.executable -m ifc_dxf`. Run the suite inside Blender and that is Blender's
+bare bundled `python.exe`, which has no `ifcopenshell` on its path — the
+extension's wheels are only on `sys.path` within the running Blender process.
+The failure is environmental; the test passes under a standalone interpreter
+that has ifcopenshell installed.

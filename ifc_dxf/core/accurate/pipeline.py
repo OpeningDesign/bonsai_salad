@@ -58,8 +58,11 @@ y down, origin at the camera box top-left), not camera metres. They are mapped
 back deterministically from the camera body's local extents
 (``camera.camera_body_local_extents``) — computed, not calibrated.
 
-Only PLAN_VIEW / REFLECTED_PLAN_VIEW are exercised; the transform for mirrored
-or non-zenithal views is untested.
+Only PLAN_VIEW / REFLECTED_PLAN_VIEW are exercised; the transform for
+non-zenithal views is untested. A REFLECTED_PLAN_VIEW reflects in Y, which the
+serializer is told about (``svg-mirror-y``) and the camera inverse carries as
+well, so the SVG mapping above and the rest of the drawing stay in one frame --
+see ``camera._MIRRORED_TARGET_VIEWS``.
 
 Remaining v1 parity gaps (see README roadmap): material-layer hatch
 decomposition (item 9) and overhead-fill re-addition (item 11 — note: overhead
@@ -85,6 +88,7 @@ except ImportError:
 
 from ..camera import (
     camera_matrix_inv_col_major,
+    camera_plan_rotation,
     camera_dir_pos,
     world_matrix_col_major,
     camera_body_local_extents,
@@ -782,9 +786,7 @@ def export_drawing(ifc, drawing, pset, output_path, template_path=None,
 
     col_major   = camera_matrix_inv_col_major(drawing)
     _cam_inv_np = np.array(col_major, dtype=float).reshape(4, 4, order='F')
-    _cam_R      = _cam_inv_np[:3, :3]
-    _cam_x_proj = _cam_R @ np.array([1.0, 0.0, 0.0])
-    _cam_rot_deg = float(np.degrees(np.arctan2(float(_cam_x_proj[1]), float(_cam_x_proj[0]))))
+    _cam_R, _cam_rot_deg = camera_plan_rotation(_cam_inv_np)
 
     cam_dir, _cam_pos = camera_dir_pos(drawing)
     # Linework filtering belongs to the serializer, driven by the drawing's own
