@@ -606,9 +606,18 @@ def _recompose_plan_footprints(candidates, cam_inv_np, sections_union):
     rest into segments. For slabs/coverings/roofs in a plan the visibility
     problem is really 2.5D, so it is solved exactly here instead: each
     element's authored footprint (`_slab_footprint_world`, extrusion profile
-    through booleans) minus every footprint above it (z_top descending,
-    `_FOOTPRINT_PRIORITY` breaks coplanar ties) minus the section hatch areas.
+    through booleans) minus every footprint nearer the viewer than it
+    (`_FOOTPRINT_PRIORITY` breaks coplanar ties) minus the section hatch areas.
     One clean closed outline per element, no duplicate fragments.
+
+    "Nearer the viewer" cannot be read as "higher": a plan looks down, so the
+    highest surface wins, but a reflected ceiling plan looks *up* -- Bonsai
+    flips the camera's Z for it (`generate_drawing_matrix`: ``m.col[2] *= -1``)
+    -- and there the lowest surface is the one you see. Painting an RCP top-down
+    hid 47 of one drawing's 52 ceilings behind the slabs and roof above them.
+    The order follows the camera instead; only the depth flips, the priority
+    tie-break reads the same either way (the finish still shows over the
+    structure it is fixed to, whichever side you view it from).
 
     candidates: [(element, gid, rec)] -- oracle-visible footprint-class
     elements. Returns (footprint_entries, fallback) where footprint_entries
@@ -616,6 +625,12 @@ def _recompose_plan_footprints(candidates, cam_inv_np, sections_union):
     authored footprint could not be extracted (BReps...) -- the caller draws
     those from their HLR output as before.
     """
+    # Sign that turns a world Z into depth towards the viewer. The camera looks
+    # along its own -Z, so cam_inv's Z row says how world Z maps to camera
+    # depth: +1 for a plan (looking down), -1 for a reflected ceiling plan. A
+    # footprint is a plan construct, so only this zenithal component matters.
+    towards_viewer = 1.0 if cam_inv_np[2, 2] >= 0 else -1.0
+
     prepared = []
     fallback = []
     for element, gid, rec in candidates:
@@ -645,14 +660,18 @@ def _recompose_plan_footprints(candidates, cam_inv_np, sections_union):
         if fp_cam.is_empty:
             fallback.append((element, gid, rec))
             continue
-        _, z_top = _wall_z_range(element, wm)
+        z_bot, z_top = _wall_z_range(element, wm)
         prio = _FOOTPRINT_PRIORITY.get(element.is_a(), 0)
-        prepared.append((z_top if z_top is not None else z_elem, prio, gid,
+        # Depth of the element's near face, measured towards the viewer: see
+        # `towards_viewer`. Both faces are scored and the nearer one kept, so
+        # the key is the face the drawing actually shows.
+        faces = [z for z in (z_top, z_bot) if z is not None] or [z_elem]
+        prepared.append((max(towards_viewer * z for z in faces), prio, gid,
                          element.is_a(), fp_cam))
 
     entries = []
-    covered = None  # union of footprints already painted (they lie above)
-    for z_top, prio, gid, cls, fp in sorted(
+    covered = None  # union of footprints already painted (they lie nearer)
+    for _depth, prio, gid, cls, fp in sorted(
             prepared, key=lambda t: (t[0], t[1], t[2]), reverse=True):
         region = fp
         try:

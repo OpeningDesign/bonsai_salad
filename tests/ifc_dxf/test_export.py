@@ -1239,6 +1239,7 @@ class TestFlippedPlacementsMirror:
                              [cols[0][1], cols[1][1]]])
         assert np.abs(rebuilt - original).max() < 1e-4
 
+
 class TestReflectedPlanKeepsTextWithItsLinework:
     """A reflected ceiling plan reflects in Y. The SVG serializer is told so
     (``svg-mirror-y``), and the camera inverse has to carry the same reflection
@@ -1358,3 +1359,93 @@ class TestReflectedPlanKeepsTextWithItsLinework:
         assert (rcp_text_y - rcp_lo) == pytest.approx(plan_hi - plan_text_y,
                                                       abs=1e-6)
 
+
+def _add_horizontal_slab(ifc, z, name, ifc_class="IfcCovering",
+                         size=4.0, thickness=0.1):
+    """Add a flat square plate of `ifc_class` with its underside at `z`."""
+    body_ctx = next(c for c in ifc.by_type("IfcGeometricRepresentationSubContext")
+                    if c.ContextIdentifier == "Body" and c.ContextType == "Model")
+    storey = ifc.by_type("IfcBuildingStorey")[0]
+
+    def pt(*c):
+        return ifc.createIfcCartesianPoint([float(v) for v in c])
+
+    def dr(*c):
+        return ifc.createIfcDirection([float(v) for v in c])
+
+    solid = ifc.createIfcExtrudedAreaSolid(
+        ifc.createIfcRectangleProfileDef("AREA", name, None, size, size),
+        ifc.createIfcAxis2Placement3D(pt(0, 0, 0), dr(0, 0, 1), dr(1, 0, 0)),
+        dr(0.0, 0.0, 1.0), thickness,
+    )
+    element = ifc.create_entity(
+        ifc_class, ifcopenshell.guid.new(), None, name, None, None,
+        ifc.createIfcLocalPlacement(
+            storey.ObjectPlacement,
+            ifc.createIfcAxis2Placement3D(pt(0.0, 0.0, z), dr(0, 0, 1), dr(1, 0, 0))),
+        ifc.createIfcProductDefinitionShape(
+            None, None,
+            [ifc.createIfcShapeRepresentation(body_ctx, "Body", "SweptSolid", [solid])]),
+        None,
+    )
+    rel = ifc.by_type("IfcRelContainedInSpatialStructure")[0]
+    rel.RelatedElements = list(rel.RelatedElements) + [element]
+    return element
+
+
+class TestFootprintPaintingFollowsTheCamera:
+    """Which of two stacked ceilings you see depends on which way you look.
+
+    Footprint recomposition resolves slabs/coverings/roofs with a painter's
+    algorithm instead of HLR, so unlike the rest of the accurate pipeline it
+    does not inherit the camera's view direction -- it has to read it. Written
+    as "highest wins" it is right for a plan and backwards for a reflected
+    ceiling plan, which looks up: one real RCP lost 47 of its 52 ceilings
+    behind the slabs and roof above them, two of which were reported as simply
+    missing.
+    """
+
+    @staticmethod
+    def _stack():
+        """Two overlapping coverings, one 1 m above the other.
+
+        The file is returned and has to stay referenced for as long as the
+        entities are used: on the 0.9 lane `util.placement.get_placement` goes
+        through the geometry kernel, so entities whose file has been collected
+        are a hard crash (access violation), not an exception. 0.8's pure-Python
+        get_local_placement never notices.
+        """
+        ifc = ifcopenshell.open(os.path.join(_FILES_DIR, "test_ifc_01.ifc"))
+        lower = _add_horizontal_slab(ifc, 2.5, "LOWER CEILING")
+        upper = _add_horizontal_slab(ifc, 3.5, "UPPER CEILING")
+        candidates = [(e, e.GlobalId, None) for e in (lower, upper)]
+        return ifc, candidates, lower.GlobalId, upper.GlobalId
+
+    @staticmethod
+    def _camera(looking_up):
+        """A zenithal camera inverse, looking down (plan) or up (RCP)."""
+        import numpy as np
+        return np.diag([1.0, 1.0, -1.0, 1.0]) if looking_up else np.eye(4)
+
+    def _painted(self, looking_up):
+        ifc, candidates, lower_gid, upper_gid = self._stack()
+        entries, fallback = accurate_pipeline._recompose_plan_footprints(
+            candidates, self._camera(looking_up), None)
+        assert not fallback, "both footprints are extruded areas and must extract"
+        assert ifc is not None  # keep the file alive past the call -- see _stack
+        return {gid for gid, _cls, _layer, _ext, _holes in entries}, lower_gid, upper_gid
+
+    def test_a_plan_keeps_the_higher_ceiling(self):
+        """Looking down, the upper one hides the lower: unchanged behaviour."""
+        painted, lower_gid, upper_gid = self._painted(looking_up=False)
+        assert upper_gid in painted
+        assert lower_gid not in painted, \
+            "a plan should not see a ceiling under another one"
+
+    def test_a_reflected_plan_keeps_the_lower_ceiling(self):
+        """Looking up, the lower one is the one in front."""
+        painted, lower_gid, upper_gid = self._painted(looking_up=True)
+        assert lower_gid in painted, \
+            "the RCP dropped the ceiling nearest the viewer"
+        assert upper_gid not in painted, \
+            "the RCP drew a ceiling hidden behind a lower one"

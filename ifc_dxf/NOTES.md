@@ -7,7 +7,7 @@ Add to this file in the same commit that fixes the thing. A bug that took an
 afternoon to corner and a line to fix leaves nothing behind otherwise, and the
 next person pays for it again.
 
-------
+---
 
 ## Projection
 
@@ -52,6 +52,31 @@ constant adjustment.
 its own `ObjectPlacement` projected through the camera. For 360 elements the
 as-is distance had a median of 23.8 drawing units; negating the IFC's Y brought
 it to 0.15. That is not something to judge by eye.
+
+### A reflected ceiling plan looks up, so "nearest the viewer" is not "highest"
+
+**Symptom:** ceilings missing from an RCP. Two were reported; six were gone, and
+the footprint painter had actually hidden 47 of the drawing's 52.
+
+Bonsai flips the camera's Z axis for a `REFLECTED_PLAN_VIEW`
+(`generate_drawing_matrix`: `m.col[2] *= -1`), so an RCP camera looks **up**.
+The accurate pipeline inherits that for free almost everywhere, because HLR is
+given the real camera and resolves occlusion itself. The exception is
+`_recompose_plan_footprints`, which resolves slabs/coverings/roofs with its own
+painter's algorithm — HLR z-fights on coplanar horizontal surfaces, so that case
+is solved in 2.5D instead. Written as "highest z_top paints first" it is right
+for a plan and exactly backwards for an RCP: every ceiling got subtracted away
+by the slabs and roof above it.
+
+**Rule:** any visibility rule that does *not* go through HLR has to read the
+view direction rather than assume one. `cam_inv_np[2, 2]` gives it: +1 looking
+down, -1 looking up. Only the depth flips — `_FOOTPRINT_PRIORITY` still breaks
+coplanar ties the same way, since a finish shows over the structure it is fixed
+to from either side.
+
+Elements genuinely behind a nearer one stay hidden, which is the point: in this
+drawing one ceiling is still dropped bottom-up, correctly, because a lower
+ceiling covers it.
 
 ---
 
@@ -112,6 +137,21 @@ way:
 the mirror, disabling `_MIRRORED_TARGET_VIEWS` has to leave the linework
 reflected and the text behind — the user's exact symptom — or the test is not
 testing it.
+
+### Keep the `ifcopenshell.file` referenced, or the 0.9 lane dies in the kernel
+
+**Symptom:** `Windows fatal exception: access violation`, killing the whole
+pytest run. Only on the 0.9 lane; the same test passed on 0.8.
+
+A test helper built some entities and returned them *without* the file it opened
+them from. Once the helper returned, the file was collected and the entities
+dangled. On 0.9 `ifcopenshell.util.placement.get_placement` goes through the
+geometry kernel (`ifcopenshell.geom.create_shape`), which dereferences that
+freed memory; 0.8's `get_local_placement` is pure Python and never notices.
+
+**Rule:** whatever holds entities has to hold the file too, for as long as it
+uses them. The faulthandler stack names the real culprit — read it rather than
+guessing, it points straight at `create_shape` under `get_placement`.
 
 ### `sys.executable` is not a usable interpreter inside Blender
 
